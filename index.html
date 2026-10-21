@@ -189,6 +189,36 @@
 
   .legend-dot{display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px;}
   footer.foot{max-width:1600px; margin:0 auto; padding:0 24px 30px; color:var(--muted); font-size:11.5px;}
+
+  @media (max-width: 768px){
+    header.topbar{
+      grid-template-columns:1fr; justify-items:center; text-align:center; padding:12px 14px; gap:8px;
+    }
+    header.topbar .logo-wrap{justify-content:center;}
+    header.topbar img{height:60px;}
+    header.topbar h1{position:static; transform:none; font-size:17px; white-space:normal;}
+    header.topbar .loadbox{align-items:center;}
+
+    .country-tabs{padding:10px 12px; gap:8px;}
+    .country-tab{padding:9px 16px; font-size:13px;}
+
+    main{padding:12px 10px 40px;}
+
+    .filters{padding:10px; gap:8px;}
+    .msel{flex:1 1 calc(50% - 8px);}
+    .msel-btn{min-width:0; width:100%;}
+    .msel-panel{width:100%; max-width:280px;}
+
+    .cards{gap:10px;}
+    .card{min-width:0; max-width:100%; flex:1 1 100%;}
+
+    .changes-banner, .update-warning{margin-left:10px; margin-right:10px;}
+
+    .modal-box{max-width:100%; max-height:92vh;}
+    .modal-body{padding:12px 14px;}
+
+    footer.foot{padding:0 10px 24px;}
+  }
 </style>
 </head>
 <body>
@@ -327,6 +357,9 @@ function isoWeekMonday(isoYear, week){
 }
 function fmtDateShort(d){
   return String(d.getUTCDate()).padStart(2,'0')+'/'+String(d.getUTCMonth()+1).padStart(2,'0');
+}
+function fmtDateFull(d){
+  return fmtDateShort(d)+'/'+d.getUTCFullYear();
 }
 
 function deriveDateFields(fecha){
@@ -905,7 +938,7 @@ function computeDateChanges(prevRows, newRows){
   prevRows.forEach(r=>{
     const gk = getContainerGroupKey(r);
     if(!gk || !r.weekKey) return;
-    if(!prevMap.has(gk.key)) prevMap.set(gk.key, {weekKey:r.weekKey, weekLabel:r.weekLabel});
+    if(!prevMap.has(gk.key)) prevMap.set(gk.key, {weekKey:r.weekKey, weekLabel:r.weekLabel, fecha:r.fecha});
   });
   newRows.forEach(r=>{
     const gk = getContainerGroupKey(r);
@@ -919,6 +952,7 @@ function computeDateChanges(prevRows, newRows){
       kind: gk.kind, ref: gk.ref,
       oldWeekLabel: prev.weekLabel.replace(/\s*\(.*\)/,''),
       newWeekLabel: r.weekLabel.replace(/\s*\(.*\)/,''),
+      oldFecha: prev.fecha, newFecha: r.fecha,
       deltaWeeks,
       colorClass: changeColorClass(deltaWeeks),
       producto: r.producto, modelo: r.modelo
@@ -927,25 +961,29 @@ function computeDateChanges(prevRows, newRows){
   return changes;
 }
 
-function renderChangesBanner(){
+function renderChangesBanner(filtered){
   const list = document.getElementById('changesBannerList');
   list.innerHTML = '';
   if(!LAST_CHANGES.size){ document.getElementById('changesBanner').style.display='none'; return; }
-  document.getElementById('changesBannerTitle').textContent = LAST_CHANGES.size+' embarque'+(LAST_CHANGES.size>1?'s':'')+' cambiaron de fecha desde tu última visita';
 
-  const allGroups = groupContainers(ROWS);
+  const allGroups = groupContainers(filtered);
   const groupByKey = new Map(allGroups.map(g=>[g.key,g]));
 
   const buckets = new Map();
+  let shownCount = 0;
   LAST_CHANGES.forEach((c, key)=>{
     const g = groupByKey.get(key);
     if(!g) return;
+    shownCount++;
     let bucketKey, bucketLabel;
     if(c.deltaWeeks < 0){ bucketKey='advance'; bucketLabel='Adelanto'; }
     else { bucketKey='delay'+c.deltaWeeks; bucketLabel='Atraso '+c.deltaWeeks+' semana'+(c.deltaWeeks>1?'s':''); }
     if(!buckets.has(bucketKey)) buckets.set(bucketKey, {label:bucketLabel, colorClass:c.colorClass, entries:[]});
     buckets.get(bucketKey).entries.push({key, g});
   });
+
+  if(!shownCount){ document.getElementById('changesBanner').style.display='none'; return; }
+  document.getElementById('changesBannerTitle').textContent = shownCount+' embarque'+(shownCount>1?'s':'')+' cambiaron de fecha desde tu última visita';
 
   const order = [...buckets.keys()].sort((a,b)=>{
     if(a==='advance') return -1;
@@ -971,7 +1009,7 @@ function renderChangesBanner(){
       const refSpan = document.createElement('span');
       refSpan.style.cssText = 'color:var(--brand-navy); font-weight:600; cursor:pointer; text-decoration:underline;';
       refSpan.textContent = g.kind==='operador' ? ('Ref. operador '+g.nro) : g.nro;
-      refSpan.onclick = ()=>openContainerModalForKey(key, ROWS);
+      refSpan.onclick = ()=>openContainerModalForKey(key, filtered);
       const modelsTxt = document.createElement('span');
       const modelsSet = [...new Set(g.items.map(it=>it.producto+' '+it.modelo))];
       modelsTxt.textContent = ': '+modelsSet.join(', ');
@@ -1044,7 +1082,15 @@ function buildContainerBlock(key, g, highlightFn){
     const fg = {'chg-advance':'#0f6b3e','chg-delay1':'#7a5400','chg-delaymulti':'#8a1f1f'}[chg.colorClass];
     notice.style.background = bg; notice.style.color = fg;
     const dirTxt = chg.deltaWeeks<0 ? ('Se adelantó '+Math.abs(chg.deltaWeeks)+' semana(s)') : ('Se atrasó '+chg.deltaWeeks+' semana(s)');
-    notice.textContent = 'Cambio de fecha: '+chg.oldWeekLabel+' → '+chg.newWeekLabel+' ('+dirTxt+')';
+    const lineTitle = document.createElement('div');
+    lineTitle.textContent = 'Cambio de fecha: '+chg.oldWeekLabel+' → '+chg.newWeekLabel+' ('+dirTxt+')';
+    notice.appendChild(lineTitle);
+    if(chg.oldFecha && chg.newFecha){
+      const lineDates = document.createElement('div');
+      lineDates.style.cssText = 'font-weight:500; margin-top:2px;';
+      lineDates.textContent = 'ETA anterior: '+fmtDateFull(chg.oldFecha)+'  →  ETA actual: '+fmtDateFull(chg.newFecha);
+      notice.appendChild(lineDates);
+    }
     block.appendChild(notice);
   }
 
@@ -1158,6 +1204,7 @@ function renderAll(){
   const filtered = applyFilters(ROWS);
   renderCards(filtered);
   renderTable(filtered);
+  renderChangesBanner(filtered);
 }
 
 function showDashboard(){
@@ -1233,8 +1280,7 @@ async function fetchFromGoogleSheets(opts){
     persist();
     hideUpdateWarning();
     LAST_CHANGES = computeDateChanges(prevRows, rows);
-    renderChangesBanner();
-    renderTable(applyFilters(ROWS));
+    renderAll();
   }catch(err){
     if(ROWS.length){
       showUpdateWarning();
