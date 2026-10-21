@@ -125,6 +125,26 @@
 
   td.cant-clickable{cursor:pointer;}
   td.cant-clickable:hover{background:#eaf1fb !important;}
+  td.chg-advance{background:#d7f3dd !important;}
+  td.chg-advance:hover{background:#c3eccd !important;}
+  td.chg-delay1{background:#fdf0c0 !important;}
+  td.chg-delay1:hover{background:#fbe6a0 !important;}
+  td.chg-delaymulti{background:#fad2d2 !important;}
+  td.chg-delaymulti:hover{background:#f7b9b9 !important;}
+
+  .changes-banner{
+    max-width:1600px; margin:0 auto 14px; background:#eef2fb; border:1px solid #9db3dd;
+    color:#1f3a6e; border-radius:10px; padding:10px 16px; font-size:13px;
+  }
+  .changes-banner .cb-head{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:6px;}
+  .changes-banner .cb-head b{font-size:13px;}
+  .changes-banner button{background:none; border:none; color:#1f3a6e; font-size:18px; line-height:1; cursor:pointer; padding:0 2px;}
+  .changes-banner ul{margin:0; padding-left:0; list-style:none;}
+  .changes-banner li{display:flex; align-items:center; gap:7px; padding:3px 0;}
+  .changes-banner .cb-dot{width:9px; height:9px; border-radius:50%; flex:none;}
+  .cb-dot.chg-advance{background:#1baf7a;}
+  .cb-dot.chg-delay1{background:#eda100;}
+  .cb-dot.chg-delaymulti{background:#d03b3b;}
 
   .modal-overlay{position:fixed; inset:0; background:rgba(11,11,11,.45); z-index:100; display:flex; align-items:center; justify-content:center; padding:20px;}
   .modal-box{background:var(--surface-1); border-radius:12px; width:100%; max-width:720px; max-height:85vh; display:flex; flex-direction:column; box-shadow:0 12px 40px rgba(0,0,0,.25);}
@@ -190,6 +210,14 @@
   <div id="updateWarning" class="update-warning" style="display:none;">
     <span id="updateWarningText"></span>
     <button type="button" id="updateWarningClose">&times;</button>
+  </div>
+
+  <div id="changesBanner" class="changes-banner" style="display:none;">
+    <div class="cb-head">
+      <b id="changesBannerTitle">Cambios desde tu última visita</b>
+      <button type="button" id="changesBannerClose">&times;</button>
+    </div>
+    <ul id="changesBannerList"></ul>
   </div>
 
   <div id="comingSoon" class="empty-state" style="display:none;">
@@ -264,7 +292,7 @@ const COUNTRIES = [
 ];
 let CURRENT_COUNTRY = null;
 function currentCountry(){ return COUNTRIES.find(c=>c.code===CURRENT_COUNTRY); }
-function lsKey(code){ return 'seguimiento_comex_data_v1_'+code; }
+function lsKey(code){ return 'seguimiento_comex_directorio_data_v1_'+code; }
 
 let ROWS = [];
 let META = {filename:"", loadedAt:null, totalSheetRows:0, pipelineRows:0};
@@ -755,13 +783,18 @@ function renderTable(filtered){
   const groupMap = new Map();
   filtered.forEach(r=>{
     const key = r.producto+'||'+r.modelo;
-    if(!groupMap.has(key)) groupMap.set(key, {producto:r.producto, modelo:r.modelo, weeks:{}, weekEstados:{}, sinFecha:0, sinFechaEstados:new Set(), total:0});
+    if(!groupMap.has(key)) groupMap.set(key, {producto:r.producto, modelo:r.modelo, weeks:{}, weekEstados:{}, weekChangeKeys:{}, sinFecha:0, sinFechaEstados:new Set(), total:0});
     const g = groupMap.get(key);
     g.total += r.cantidad;
     if(r.weekKey){
       g.weeks[r.weekKey] = (g.weeks[r.weekKey]||0) + r.cantidad;
       if(!g.weekEstados[r.weekKey]) g.weekEstados[r.weekKey] = new Set();
       g.weekEstados[r.weekKey].add(r.estado);
+      const gk = getContainerGroupKey(r);
+      if(gk && LAST_CHANGES.has(gk.key)){
+        if(!g.weekChangeKeys[r.weekKey]) g.weekChangeKeys[r.weekKey] = new Set();
+        g.weekChangeKeys[r.weekKey].add(gk.key);
+      }
     } else {
       g.sinFecha += r.cantidad;
       g.sinFechaEstados.add(r.estado);
@@ -793,7 +826,7 @@ function renderTable(filtered){
       const v = g.weeks[wk]||0;
       if(v){
         td.appendChild(cellContent(v, g.weekEstados[wk]));
-        td.className = 'cant-clickable';
+        td.className = 'cant-clickable '+worstChangeClass(g.weekChangeKeys[wk]);
         td.onclick = ()=>openContainerModal(g.producto, g.modelo, wk, filtered);
       }
       else { td.textContent = '—'; td.className='cant0'; }
@@ -838,6 +871,132 @@ function renderTable(filtered){
   document.getElementById('tcNote').textContent = groups.length+' combinaciones producto/modelo · '+weekKeys.length+' semanas en pantalla';
 }
 
+let LAST_CHANGES = new Map();
+
+function loadPreviousSnapshot(countryCode){
+  try{
+    const raw = localStorage.getItem(lsKey(countryCode));
+    if(!raw) return null;
+    const parsed = JSON.parse(raw);
+    parsed.rows.forEach(r=>{ if(r.fecha) r.fecha = new Date(r.fecha); });
+    return parsed.rows;
+  }catch(e){ return null; }
+}
+
+function computeWeekDelta(oldKey, newKey){
+  const [oy, ow] = oldKey.split('-W').map(Number);
+  const [ny, nw] = newKey.split('-W').map(Number);
+  const oldMonday = isoWeekMonday(oy, ow);
+  const newMonday = isoWeekMonday(ny, nw);
+  return Math.round((newMonday - oldMonday) / (7*86400000));
+}
+
+function changeColorClass(deltaWeeks){
+  if(deltaWeeks < 0) return 'chg-advance';
+  if(deltaWeeks === 1) return 'chg-delay1';
+  if(deltaWeeks > 1) return 'chg-delaymulti';
+  return null;
+}
+
+function computeDateChanges(prevRows, newRows){
+  const changes = new Map();
+  if(!prevRows || !prevRows.length) return changes;
+  const prevMap = new Map();
+  prevRows.forEach(r=>{
+    const gk = getContainerGroupKey(r);
+    if(!gk || !r.weekKey) return;
+    if(!prevMap.has(gk.key)) prevMap.set(gk.key, {weekKey:r.weekKey, weekLabel:r.weekLabel});
+  });
+  newRows.forEach(r=>{
+    const gk = getContainerGroupKey(r);
+    if(!gk || !r.weekKey) return;
+    if(changes.has(gk.key)) return;
+    const prev = prevMap.get(gk.key);
+    if(!prev || prev.weekKey===r.weekKey) return;
+    const deltaWeeks = computeWeekDelta(prev.weekKey, r.weekKey);
+    if(deltaWeeks===0) return;
+    changes.set(gk.key, {
+      kind: gk.kind, ref: gk.ref,
+      oldWeekLabel: prev.weekLabel.replace(/\s*\(.*\)/,''),
+      newWeekLabel: r.weekLabel.replace(/\s*\(.*\)/,''),
+      deltaWeeks,
+      colorClass: changeColorClass(deltaWeeks),
+      producto: r.producto, modelo: r.modelo
+    });
+  });
+  return changes;
+}
+
+function renderChangesBanner(){
+  const list = document.getElementById('changesBannerList');
+  list.innerHTML = '';
+  if(!LAST_CHANGES.size){ document.getElementById('changesBanner').style.display='none'; return; }
+  document.getElementById('changesBannerTitle').textContent = LAST_CHANGES.size+' embarque'+(LAST_CHANGES.size>1?'s':'')+' cambiaron de fecha desde tu última visita';
+
+  const allGroups = groupContainers(ROWS);
+  const groupByKey = new Map(allGroups.map(g=>[g.key,g]));
+
+  const buckets = new Map();
+  LAST_CHANGES.forEach((c, key)=>{
+    const g = groupByKey.get(key);
+    if(!g) return;
+    let bucketKey, bucketLabel;
+    if(c.deltaWeeks < 0){ bucketKey='advance'; bucketLabel='Adelanto'; }
+    else { bucketKey='delay'+c.deltaWeeks; bucketLabel='Atraso '+c.deltaWeeks+' semana'+(c.deltaWeeks>1?'s':''); }
+    if(!buckets.has(bucketKey)) buckets.set(bucketKey, {label:bucketLabel, colorClass:c.colorClass, entries:[]});
+    buckets.get(bucketKey).entries.push({key, g});
+  });
+
+  const order = [...buckets.keys()].sort((a,b)=>{
+    if(a==='advance') return -1;
+    if(b==='advance') return 1;
+    return parseInt(a.replace('delay',''),10) - parseInt(b.replace('delay',''),10);
+  });
+
+  order.forEach(bucketKey=>{
+    const bucket = buckets.get(bucketKey);
+    const sectionLi = document.createElement('li');
+    sectionLi.style.cssText = 'display:block; margin-top:6px;';
+
+    const sectionTitle = document.createElement('div');
+    sectionTitle.style.cssText = 'display:flex; align-items:center; gap:7px; font-weight:700; margin-bottom:3px;';
+    const dot = document.createElement('span'); dot.className='cb-dot '+bucket.colorClass;
+    const lbl = document.createElement('span'); lbl.textContent = bucket.label+' ('+bucket.entries.length+')';
+    sectionTitle.appendChild(dot); sectionTitle.appendChild(lbl);
+    sectionLi.appendChild(sectionTitle);
+
+    bucket.entries.forEach(({key,g})=>{
+      const row = document.createElement('div');
+      row.style.cssText = 'padding:2px 0 2px 16px;';
+      const refSpan = document.createElement('span');
+      refSpan.style.cssText = 'color:var(--brand-navy); font-weight:600; cursor:pointer; text-decoration:underline;';
+      refSpan.textContent = g.kind==='operador' ? ('Ref. operador '+g.nro) : g.nro;
+      refSpan.onclick = ()=>openContainerModalForKey(key, ROWS);
+      const modelsTxt = document.createElement('span');
+      const modelsSet = [...new Set(g.items.map(it=>it.producto+' '+it.modelo))];
+      modelsTxt.textContent = ': '+modelsSet.join(', ');
+      row.appendChild(refSpan); row.appendChild(modelsTxt);
+      sectionLi.appendChild(row);
+    });
+
+    list.appendChild(sectionLi);
+  });
+
+  document.getElementById('changesBanner').style.display = 'block';
+}
+function worstChangeClass(changeKeysSet){
+  if(!changeKeysSet || !changeKeysSet.size) return '';
+  const priority = {'chg-delaymulti':3, 'chg-delay1':2, 'chg-advance':1};
+  let best = '';
+  changeKeysSet.forEach(k=>{
+    const c = LAST_CHANGES.get(k);
+    if(c && priority[c.colorClass] > (priority[best]||0)) best = c.colorClass;
+  });
+  return best;
+}
+function hideChangesBanner(){ document.getElementById('changesBanner').style.display = 'none'; }
+document.getElementById('changesBannerClose').onclick = hideChangesBanner;
+
 function getContainerGroupKey(r){
   const nro = (r.nroContenedor||'').trim();
   if(nro) return {key:'C::'+nro, kind:'contenedor', ref:nro};
@@ -874,6 +1033,69 @@ function groupContainers(filtered){
 
 function fmtNum1(n){ return n.toLocaleString('es-AR',{minimumFractionDigits:0,maximumFractionDigits:1}); }
 
+function buildContainerBlock(key, g, highlightFn){
+  const block = document.createElement('div'); block.className = 'cont-block';
+
+  const chg = LAST_CHANGES.get(key);
+  if(chg){
+    const notice = document.createElement('div');
+    notice.style.cssText = 'border-radius:6px; padding:6px 10px; margin-bottom:8px; font-size:12.5px; font-weight:600;';
+    const bg = {'chg-advance':'#d7f3dd','chg-delay1':'#fdf0c0','chg-delaymulti':'#fad2d2'}[chg.colorClass];
+    const fg = {'chg-advance':'#0f6b3e','chg-delay1':'#7a5400','chg-delaymulti':'#8a1f1f'}[chg.colorClass];
+    notice.style.background = bg; notice.style.color = fg;
+    const dirTxt = chg.deltaWeeks<0 ? ('Se adelantó '+Math.abs(chg.deltaWeeks)+' semana(s)') : ('Se atrasó '+chg.deltaWeeks+' semana(s)');
+    notice.textContent = 'Cambio de fecha: '+chg.oldWeekLabel+' → '+chg.newWeekLabel+' ('+dirTxt+')';
+    block.appendChild(notice);
+  }
+
+  const head = document.createElement('div'); head.className = 'cont-block-head';
+  const nroTitle = document.createElement('span'); nroTitle.className = 'cont-nro-title';
+  nroTitle.textContent = g.kind==='operador' ? ('Ref. operador: '+g.nro) : g.nro;
+  head.appendChild(nroTitle);
+  if(g.kind==='operador'){
+    const m = document.createElement('span'); m.className = 'cont-meta'; m.textContent = 'En coordinación — contenedor todavía no asignado';
+    head.appendChild(m);
+  } else {
+    [['Tipo',g.tipo],['Forwarder',g.forwarder||'—'],['Cant. cont.',g.cantidadContenedor?fmtInt(g.cantidadContenedor):'—'],['CBM',g.cbm?fmtNum1(g.cbm):'—'],['Kgs',g.kgs?fmtInt(g.kgs):'—']].forEach(([lbl,val])=>{
+      const m = document.createElement('span'); m.className = 'cont-meta'; m.textContent = lbl+': '+val;
+      head.appendChild(m);
+    });
+  }
+  block.appendChild(head);
+
+  const itemsTable = document.createElement('table'); itemsTable.className = 'cont-items';
+  const ith = document.createElement('tr');
+  ['','Producto','Modelo','Cantidad','FOB Supplier','Estado'].forEach(h=>{ const th=document.createElement('th'); th.textContent=h; ith.appendChild(th); });
+  itemsTable.appendChild(ith);
+  let totalCant = 0, totalFob = 0;
+  g.items.forEach(it=>{
+    totalCant += it.cantidad; totalFob += it.fob;
+    const itr = document.createElement('tr');
+    if(highlightFn && highlightFn(it)) itr.className = 'this-row';
+    const dotTd = document.createElement('td');
+    const stDef = STATE_DEFS.find(d=>d.key===it.estado);
+    if(stDef){ const dot=document.createElement('span'); dot.style.cssText='display:inline-block;width:7px;height:7px;border-radius:50%;background:'+stDef.color+';'; dot.title=stDef.label; dotTd.appendChild(dot); }
+    itr.appendChild(dotTd);
+    const tdP = document.createElement('td'); tdP.textContent = it.producto; itr.appendChild(tdP);
+    const tdM = document.createElement('td'); tdM.textContent = it.modelo; itr.appendChild(tdM);
+    const tdC = document.createElement('td'); tdC.className='num'; tdC.textContent = fmtInt(it.cantidad); itr.appendChild(tdC);
+    const tdF = document.createElement('td'); tdF.className='num'; tdF.textContent = fmtUsd(it.fob); itr.appendChild(tdF);
+    const tdE = document.createElement('td'); tdE.textContent = stDef ? stDef.label : it.estado; itr.appendChild(tdE);
+    itemsTable.appendChild(itr);
+  });
+  const tfoot = document.createElement('tfoot');
+  const tfr = document.createElement('tr');
+  const tdBlank = document.createElement('td'); tdBlank.colSpan=3; tdBlank.textContent='Total contenedor'; tfr.appendChild(tdBlank);
+  const tdTC = document.createElement('td'); tdTC.className='num'; tdTC.textContent = fmtInt(totalCant); tfr.appendChild(tdTC);
+  const tdTF = document.createElement('td'); tdTF.className='num'; tdTF.textContent = fmtUsd(totalFob); tfr.appendChild(tdTF);
+  const tdBlank2 = document.createElement('td'); tfr.appendChild(tdBlank2);
+  tfoot.appendChild(tfr);
+  itemsTable.appendChild(tfoot);
+
+  block.appendChild(itemsTable);
+  return block;
+}
+
 function openContainerModal(producto, modelo, weekKey, filtered){
   const cellRows = filtered.filter(r=>r.producto===producto && r.modelo===modelo && (r.weekKey||null)===weekKey);
   const keyed = cellRows.map(r=>({row:r, gk:getContainerGroupKey(r)}));
@@ -897,53 +1119,7 @@ function openContainerModal(producto, modelo, weekKey, filtered){
   keys.forEach(key=>{
     const g = allGroups.find(x=>x.key===key);
     if(!g) return;
-    const block = document.createElement('div'); block.className = 'cont-block';
-
-    const head = document.createElement('div'); head.className = 'cont-block-head';
-    const nroTitle = document.createElement('span'); nroTitle.className = 'cont-nro-title';
-    nroTitle.textContent = g.kind==='operador' ? ('Ref. operador: '+g.nro) : g.nro;
-    head.appendChild(nroTitle);
-    if(g.kind==='operador'){
-      const m = document.createElement('span'); m.className = 'cont-meta'; m.textContent = 'En coordinación — contenedor todavía no asignado';
-      head.appendChild(m);
-    } else {
-      [['Tipo',g.tipo],['Forwarder',g.forwarder||'—'],['Cant. cont.',g.cantidadContenedor?fmtInt(g.cantidadContenedor):'—'],['CBM',g.cbm?fmtNum1(g.cbm):'—'],['Kgs',g.kgs?fmtInt(g.kgs):'—']].forEach(([lbl,val])=>{
-        const m = document.createElement('span'); m.className = 'cont-meta'; m.textContent = lbl+': '+val;
-        head.appendChild(m);
-      });
-    }
-    block.appendChild(head);
-
-    const itemsTable = document.createElement('table'); itemsTable.className = 'cont-items';
-    const ith = document.createElement('tr');
-    ['','Producto','Modelo','Cantidad','FOB Supplier','Estado'].forEach(h=>{ const th=document.createElement('th'); th.textContent=h; ith.appendChild(th); });
-    itemsTable.appendChild(ith);
-    let totalCant = 0, totalFob = 0;
-    g.items.forEach(it=>{
-      totalCant += it.cantidad; totalFob += it.fob;
-      const itr = document.createElement('tr');
-      if(it.producto===producto && it.modelo===modelo && (it.weekKey||null)===weekKey) itr.className = 'this-row';
-      const dotTd = document.createElement('td');
-      const stDef = STATE_DEFS.find(d=>d.key===it.estado);
-      if(stDef){ const dot=document.createElement('span'); dot.style.cssText='display:inline-block;width:7px;height:7px;border-radius:50%;background:'+stDef.color+';'; dot.title=stDef.label; dotTd.appendChild(dot); }
-      itr.appendChild(dotTd);
-      const tdP = document.createElement('td'); tdP.textContent = it.producto; itr.appendChild(tdP);
-      const tdM = document.createElement('td'); tdM.textContent = it.modelo; itr.appendChild(tdM);
-      const tdC = document.createElement('td'); tdC.className='num'; tdC.textContent = fmtInt(it.cantidad); itr.appendChild(tdC);
-      const tdF = document.createElement('td'); tdF.className='num'; tdF.textContent = fmtUsd(it.fob); itr.appendChild(tdF);
-      const tdE = document.createElement('td'); tdE.textContent = stDef ? stDef.label : it.estado; itr.appendChild(tdE);
-      itemsTable.appendChild(itr);
-    });
-    const tfoot = document.createElement('tfoot');
-    const tfr = document.createElement('tr');
-    const tdBlank = document.createElement('td'); tdBlank.colSpan=3; tdBlank.textContent='Total contenedor'; tfr.appendChild(tdBlank);
-    const tdTC = document.createElement('td'); tdTC.className='num'; tdTC.textContent = fmtInt(totalCant); tfr.appendChild(tdTC);
-    const tdTF = document.createElement('td'); tdTF.className='num'; tdTF.textContent = fmtUsd(totalFob); tfr.appendChild(tdTF);
-    const tdBlank2 = document.createElement('td'); tfr.appendChild(tdBlank2);
-    tfoot.appendChild(tfr);
-    itemsTable.appendChild(tfoot);
-
-    block.appendChild(itemsTable);
+    const block = buildContainerBlock(key, g, it=>it.producto===producto && it.modelo===modelo && (it.weekKey||null)===weekKey);
     body.appendChild(block);
   });
 
@@ -954,6 +1130,24 @@ function openContainerModal(producto, modelo, weekKey, filtered){
     body.appendChild(p);
   }
 
+  document.getElementById('contModalOverlay').style.display = 'flex';
+}
+
+function openContainerModalForKey(key, filtered){
+  const allGroups = groupContainers(filtered);
+  const g = allGroups.find(x=>x.key===key);
+  const title = document.getElementById('contModalTitle');
+  const body = document.getElementById('contModalBody');
+  body.innerHTML = '';
+  if(!g){
+    title.textContent = 'Contenedor';
+    const p = document.createElement('p'); p.className = 'cont-noassign';
+    p.textContent = 'Ya no hay datos para este contenedor/referencia con los filtros actuales.';
+    body.appendChild(p);
+  } else {
+    title.textContent = g.kind==='operador' ? ('Ref. operador: '+g.nro) : g.nro;
+    body.appendChild(buildContainerBlock(key, g, null));
+  }
   document.getElementById('contModalOverlay').style.display = 'flex';
 }
 
@@ -1034,9 +1228,13 @@ async function fetchFromGoogleSheets(opts){
       fechaDepositoCol: country.fechaDepositoCol,
       sheetLabel: country.sheetName || ('hoja gid '+country.sheetGid)
     });
+    const prevRows = loadPreviousSnapshot(country.code);
     loadIntoState(rows, meta);
     persist();
     hideUpdateWarning();
+    LAST_CHANGES = computeDateChanges(prevRows, rows);
+    renderChangesBanner();
+    renderTable(applyFilters(ROWS));
   }catch(err){
     if(ROWS.length){
       showUpdateWarning();
@@ -1068,6 +1266,8 @@ function selectCountry(country){
   CURRENT_COUNTRY = country.code;
   renderCountryTabs();
   hideUpdateWarning();
+  LAST_CHANGES = new Map();
+  hideChangesBanner();
 
   document.getElementById('comingSoon').style.display = 'none';
   document.getElementById('dashboard').style.display = 'none';
