@@ -1101,6 +1101,8 @@ function buildContainerBlock(key, g, highlightFn){
   if(g.kind==='operador'){
     const m = document.createElement('span'); m.className = 'cont-meta'; m.textContent = 'En coordinación — contenedor todavía no asignado';
     head.appendChild(m);
+    const mc = document.createElement('span'); mc.className = 'cont-meta'; mc.textContent = 'CBM: '+(g.cbm?fmtNum1(g.cbm):'—');
+    head.appendChild(mc);
   } else {
     [['Tipo',g.tipo],['Forwarder',g.forwarder||'—'],['Cant. cont.',g.cantidadContenedor?fmtInt(g.cantidadContenedor):'—'],['CBM',g.cbm?fmtNum1(g.cbm):'—'],['Kgs',g.kgs?fmtInt(g.kgs):'—']].forEach(([lbl,val])=>{
       const m = document.createElement('span'); m.className = 'cont-meta'; m.textContent = lbl+': '+val;
